@@ -5,14 +5,15 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, ConversationHandler
 import gspread_asyncio
 from oauth2client.service_account import ServiceAccountCredentials
+import os
+import json
 
 # Фикс для event loop
 nest_asyncio.apply()
 
-# Токен бота
-TOKEN = "8057053932:AAG46bQ8KxLxDbdaZYAcxZwd9E9SfGkRNy0"
-# Пока заглушка для ADMIN_ID
-ADMIN_ID = 469966890  # Заменишь после получения ID
+# Токен и ID из переменных окружения
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # Логирование
 logging.basicConfig(
@@ -26,7 +27,9 @@ SERVICE, DATE = range(2)
 # Подключение к Google Sheets
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("esoteric-ripple-454915-r1-03af2c49d326.json", scope)
+    creds_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+    creds_dict = json.loads(creds_json)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread_asyncio.AsyncioGspreadClientManager(lambda: creds)
 
 # Асинхронная функция записи
@@ -60,7 +63,7 @@ async def list_bookings(update: Update, context: CallbackContext):
         logger.error(f"Ошибка чтения Google Sheets: {type(e).__name__}: {str(e)}")
         await update.message.reply_text("Ошибка при загрузке записей.")
 
-# Админ-команда /stats с проверкой ID
+# Админ-команда /stats
 async def stats(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     if user_id != ADMIN_ID:
@@ -123,8 +126,6 @@ async def cancel(update: Update, context: CallbackContext):
 
 async def main():
     app = Application.builder().token(TOKEN).build()
-
-    # Настройка разговора
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -138,11 +139,8 @@ async def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("stats", stats))
-    
-
     print("Бот запущен...")
     await app.run_polling()
 
