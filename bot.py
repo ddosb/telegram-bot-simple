@@ -1,3 +1,6 @@
+import re  # Убедись, что это есть в начале файла для регулярных выражений
+from dotenv import load_dotenv
+load_dotenv()
 import logging
 import asyncio
 import nest_asyncio
@@ -103,12 +106,31 @@ async def get_service(update: Update, context: CallbackContext):
 async def get_date(update: Update, context: CallbackContext):
     user = update.message.from_user
     service = context.user_data["service"]
-    date = update.message.text
-    await write_booking(user.full_name, service, date)
-    keyboard = [["Записаться", "Посмотреть записи"], ["Помощь"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(f"✅ Запись оформлена!\n🗓 Услуга: {service}\n📅 Дата: {date}", reply_markup=reply_markup)
-    return ConversationHandler.END
+    date = update.message.text  # Получаем введенную дату
+    
+    # Проверяем формат даты (DD.MM)
+    if not re.match(r"^\d{2}\.\d{2}$", date):
+        # Если формат неверный, запрашиваем повторный ввод
+        await update.message.reply_text("Неверный формат даты. Введи в формате DD.MM (например, 12.04):")
+        return DATE  # Остаемся на этапе ввода даты
+    
+    try:
+        # Записываем данные через функцию write_booking
+        await write_booking(user.full_name, service, date)
+        # Создаем клавиатуру
+        keyboard = [["Записаться", "Посмотреть записи"], ["Помощь"]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        # Подтверждаем запись с клавиатурой
+        await update.message.reply_text(
+            f"✅ Запись оформлена!\n🗓 Услуга: {service}\n📅 Дата: {date}",
+            reply_markup=reply_markup
+        )
+        return ConversationHandler.END  # Завершаем диалог
+    except Exception as e:
+        # Логируем ошибку и уведомляем пользователя
+        logger.error(f"Ошибка при записи: {type(e).__name__}: {str(e)}")
+        await update.message.reply_text("Ошибка при записи данных.")
+        return ConversationHandler.END
 
 # Помощь
 async def help_command(update: Update, context: CallbackContext):
