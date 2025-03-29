@@ -79,22 +79,21 @@ async def service(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DATE
 
 # Обработка выбора даты и запись
+
 async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    date = query.data  # Получаем выбранную дату
+    date = query.data
     service = context.user_data["service"]
     user = update.effective_user
     
     try:
-        # Запись в Google Sheets
         client = get_gspread_client()
         agc = await client.authorize()
         sheet = await agc.open_by_key("1tDnIzjnvKRyE31fMxL3qJuWG4T8tTf3MnU-38URY1_4")
         worksheet = await sheet.get_worksheet(0)
         await worksheet.append_row([user.full_name, service, date])
         
-        # InlineKeyboard после записи
         keyboard = [[InlineKeyboardButton("Записаться снова", callback_data="restart")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
@@ -110,6 +109,18 @@ async def get_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Запись отменена.")
     return ConversationHandler.END
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    services = [
+        InlineKeyboardButton("Массаж", callback_data="Массаж"),
+        InlineKeyboardButton("Маникюр", callback_data="Маникюр"),
+        InlineKeyboardButton("Стрижка", callback_data="Стрижка"),
+    ]
+    reply_markup = InlineKeyboardMarkup([services])
+    await query.edit_message_text("Выбери услугу:", reply_markup=reply_markup)
+    return SERVICE  # Возвращаем в состояние выбора услуги
 
 # Статистика для админа
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,13 +149,13 @@ def main():
             SERVICE: [CallbackQueryHandler(service)],
             DATE: [CallbackQueryHandler(get_date)],
         },
-        fallbacks=[CommandHandler("cancel", cancel),
-                  CallbackQueryHandler(record, pattern="^restart$")],  # Добавляем обработчик
+        fallbacks=[CommandHandler("cancel", cancel)],  # Убираем restart из fallbacks
     )
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CallbackQueryHandler(restart, pattern="^restart$"))  # Новый обработчик
     
     logger.info("Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
