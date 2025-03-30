@@ -30,8 +30,7 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-SERVICE, DATE, TIME = range(3)
-SLOT_LIMIT = 2  # Максимум 2 записи на один слот времени
+SERVICE, DATE, TIME, SETTINGS, MANAGE_SERVICES = range(5)  # Добавляем MANAGE_SERVICES
 
 DB_PATH = "bookings.db"
 
@@ -39,6 +38,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
+    # Таблица для записей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,8 +58,46 @@ def init_db():
     cursor.execute("DROP INDEX IF EXISTS idx_date_time")
     logger.info("Уникальный индекс idx_date_time удалён для поддержки SLOT_LIMIT")
     
+    # Таблица для настроек
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            setting_name TEXT NOT NULL UNIQUE,
+            setting_value TEXT NOT NULL
+        )
+    ''')
+    cursor.execute("INSERT OR IGNORE INTO settings (setting_name, setting_value) VALUES (?, ?)", ("slot_limit", "2"))
+    
+    # Таблица для услуг
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_name TEXT NOT NULL UNIQUE
+        )
+    ''')
+    # Начальные услуги
+    initial_services = ["Массаж", "Маникюр", "Стрижка"]
+    for service in initial_services:
+        cursor.execute("INSERT OR IGNORE INTO services (service_name) VALUES (?)", (service,))
+    
     conn.commit()
     conn.close()
+
+def get_slot_limit():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT setting_value FROM settings WHERE setting_name = 'slot_limit'")
+    result = cursor.fetchone()
+    conn.close()
+    return int(result[0]) if result else 2
+
+def get_services():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT service_name FROM services")
+    services = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return services
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["Записаться"], ["Помощь"]]
@@ -74,13 +112,14 @@ async def record(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data['state'] = SERVICE
     
-    services = [
-        [InlineKeyboardButton("Массаж", callback_data="Массаж"),
-         InlineKeyboardButton("Маникюр", callback_data="Маникюр"),
-         InlineKeyboardButton("Стрижка", callback_data="Стрижка")],
-        [InlineKeyboardButton("Назад", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(services)
+    services = get_services()
+    if not services:
+        await update.message.reply_text("Нет доступных услуг. Обратитесь к администратору.")
+        return ConversationHandler.END
+    
+    keyboard = [[InlineKeyboardButton(service, callback_data=service) for service in services[i:i+2]] for i in range(0, len(services), 2)]
+    keyboard.append([InlineKeyboardButton("Назад", callback_data="back_to_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Выбери услугу:", reply_markup=reply_markup)
     return SERVICE
 
@@ -161,9 +200,10 @@ async def get_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
+    SLOT_LIMIT = get_slot_limit()
     cursor.execute("SELECT COUNT(*) FROM bookings WHERE date = ? AND time = ?", (date, time))
     current_bookings = cursor.fetchone()[0]
-    logger.info(f"Текущих записей на {date} {time}: {current_bookings}")
+    logger.info(f"Текущих записей на {date} {time}: {current_bookings}, лимит: {SLOT_LIMIT}")
     
     if current_bookings >= SLOT_LIMIT:
         logger.info(f"Слот {date} {time} достиг лимита ({SLOT_LIMIT})")
@@ -240,13 +280,10 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data['state'] = SERVICE
     
-    services = [
-        [InlineKeyboardButton("Массаж", callback_data="Массаж"),
-         InlineKeyboardButton("Маникюр", callback_data="Маникюр"),
-         InlineKeyboardButton("Стрижка", callback_data="Стрижка")],
-        [InlineKeyboardButton("Назад", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(services)
+    services = get_services()
+    keyboard = [[InlineKeyboardButton(service, callback_data=service) for service in services[i:i+2]] for i in range(0, len(services), 2)]
+    keyboard.append([InlineKeyboardButton("Назад", callback_data="back_to_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Выбери услугу:", reply_markup=reply_markup)
     return SERVICE
 
@@ -265,13 +302,10 @@ async def back_to_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('date', None)
     context.user_data['state'] = SERVICE
     
-    services = [
-        [InlineKeyboardButton("Массаж", callback_data="Массаж"),
-         InlineKeyboardButton("Маникюр", callback_data="Маникюр"),
-         InlineKeyboardButton("Стрижка", callback_data="Стрижка")],
-        [InlineKeyboardButton("Назад", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(services)
+    services = get_services()
+    keyboard = [[InlineKeyboardButton(service, callback_data=service) for service in services[i:i+2]] for i in range(0, len(services), 2)]
+    keyboard.append([InlineKeyboardButton("Назад", callback_data="back_to_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Выбери услугу:", reply_markup=reply_markup)
     return SERVICE
 
@@ -401,7 +435,8 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Админ {user_id} открыл панель управления")
     keyboard = [
         [InlineKeyboardButton("Посмотреть все записи", callback_data="admin_view")],
-        [InlineKeyboardButton("Статистика", callback_data="admin_stats")]
+        [InlineKeyboardButton("Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("Настройки", callback_data="admin_settings")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Админ-панель:", reply_markup=reply_markup)
@@ -494,7 +529,8 @@ async def back_to_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Админ {user_id} вернулся в панель управления")
     keyboard = [
         [InlineKeyboardButton("Посмотреть все записи", callback_data="admin_view")],
-        [InlineKeyboardButton("Статистика", callback_data="admin_stats")]
+        [InlineKeyboardButton("Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton("Настройки", callback_data="admin_settings")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("Админ-панель:", reply_markup=reply_markup)
@@ -511,6 +547,178 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Админ {user_id} запросил статистику через админ-панель")
     await send_stats(query, context)
 
+async def admin_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("Доступ запрещен.")
+        return
+    
+    logger.info(f"Админ {user_id} открыл настройки")
+    SLOT_LIMIT = get_slot_limit()
+    keyboard = [
+        [InlineKeyboardButton(f"Лимит слотов: {SLOT_LIMIT}", callback_data="set_slot_limit")],
+        [InlineKeyboardButton("Управление услугами", callback_data="manage_services")],
+        [InlineKeyboardButton("Назад в админ-панель", callback_data="back_to_admin")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text("Настройки бота:", reply_markup=reply_markup)
+
+async def set_slot_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("Доступ запрещен.")
+        return
+    
+    logger.info(f"Админ {user_id} начал настройку лимита слотов")
+    context.user_data['state'] = SETTINGS
+    await query.edit_message_text("Введите новый лимит слотов (целое число, например, 1, 3, 5):")
+    return SETTINGS
+
+async def save_slot_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Доступ запрещен.")
+        return ConversationHandler.END
+    
+    try:
+        new_limit = int(update.message.text)
+        if new_limit <= 0:
+            await update.message.reply_text("Лимит должен быть положительным числом. Попробуйте снова:")
+            return SETTINGS
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE settings SET setting_value = ? WHERE setting_name = 'slot_limit'", (str(new_limit),))
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Админ {user_id} установил новый лимит слотов: {new_limit}")
+        await update.message.reply_text(f"Лимит слотов обновлён: {new_limit}")
+        
+        keyboard = [
+            [InlineKeyboardButton("Посмотреть все записи", callback_data="admin_view")],
+            [InlineKeyboardButton("Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton("Настройки", callback_data="admin_settings")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Админ-панель:", reply_markup=reply_markup)
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, введите целое число. Попробуйте снова:")
+        return SETTINGS
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении лимита слотов: {type(e).__name__}: {str(e)}")
+        await update.message.reply_text("Ошибка при сохранении лимита.")
+        return ConversationHandler.END
+
+async def manage_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("Доступ запрещен.")
+        return
+    
+    logger.info(f"Админ {user_id} открыл управление услугами")
+    services = get_services()
+    keyboard = [[InlineKeyboardButton(service, callback_data=f"delete_service_{service}")] for service in services]
+    keyboard.append([InlineKeyboardButton("Добавить услугу", callback_data="add_service")])
+    keyboard.append([InlineKeyboardButton("Назад в настройки", callback_data="admin_settings")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text("Текущие услуги (нажмите для удаления):", reply_markup=reply_markup)
+
+async def add_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("Доступ запрещен.")
+        return
+    
+    logger.info(f"Админ {user_id} начал добавление услуги")
+    context.user_data['state'] = MANAGE_SERVICES
+    await query.edit_message_text("Введите название новой услуги:")
+    return MANAGE_SERVICES
+
+async def save_new_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("Доступ запрещен.")
+        return ConversationHandler.END
+    
+    new_service = update.message.text.strip()
+    if not new_service:
+        await update.message.reply_text("Название услуги не может быть пустым. Попробуйте снова:")
+        return MANAGE_SERVICES
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO services (service_name) VALUES (?)", (new_service,))
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Админ {user_id} добавил услугу: {new_service}")
+        await update.message.reply_text(f"Услуга '{new_service}' добавлена.")
+        
+        services = get_services()
+        keyboard = [[InlineKeyboardButton(service, callback_data=f"delete_service_{service}")] for service in services]
+        keyboard.append([InlineKeyboardButton("Добавить услугу", callback_data="add_service")])
+        keyboard.append([InlineKeyboardButton("Назад в настройки", callback_data="admin_settings")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Текущие услуги (нажмите для удаления):", reply_markup=reply_markup)
+        return ConversationHandler.END
+    except sqlite3.IntegrityError:
+        await update.message.reply_text("Такая услуга уже существует. Попробуйте другое название:")
+        return MANAGE_SERVICES
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении услуги: {type(e).__name__}: {str(e)}")
+        await update.message.reply_text("Ошибка при добавлении услуги.")
+        return ConversationHandler.END
+
+async def delete_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("Доступ запрещен.")
+        return
+    
+    service_to_delete = query.data.replace("delete_service_", "")
+    logger.info(f"Админ {user_id} пытается удалить услугу: {service_to_delete}")
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM services WHERE service_name = ?", (service_to_delete,))
+        if cursor.rowcount == 0:
+            await query.edit_message_text(f"Услуга '{service_to_delete}' не найдена.")
+            conn.close()
+            return
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Админ {user_id} удалил услугу: {service_to_delete}")
+        services = get_services()
+        keyboard = [[InlineKeyboardButton(service, callback_data=f"delete_service_{service}")] for service in services]
+        keyboard.append([InlineKeyboardButton("Добавить услугу", callback_data="add_service")])
+        keyboard.append([InlineKeyboardButton("Назад в настройки", callback_data="admin_settings")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Текущие услуги (нажмите для удаления):", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Ошибка при удалении услуги: {type(e).__name__}: {str(e)}")
+        await query.edit_message_text("Ошибка при удалении услуги.")
+
 def main():
     init_db()
     
@@ -520,12 +728,16 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex(r"^(Записаться)$"), record),
-            CallbackQueryHandler(restart, pattern="^restart$")
+            CallbackQueryHandler(restart, pattern="^restart$"),
+            CallbackQueryHandler(set_slot_limit, pattern="^set_slot_limit$"),
+            CallbackQueryHandler(add_service, pattern="^add_service$")
         ],
         states={
             SERVICE: [CallbackQueryHandler(service)],
             DATE: [CallbackQueryHandler(date)],
             TIME: [CallbackQueryHandler(get_time)],
+            SETTINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_slot_limit)],
+            MANAGE_SERVICES: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_new_service)]
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -548,6 +760,9 @@ def main():
     application.add_handler(CallbackQueryHandler(delete_booking, pattern="^admin_delete_"))
     application.add_handler(CallbackQueryHandler(admin_stats, pattern="^admin_stats$"))
     application.add_handler(CallbackQueryHandler(back_to_admin, pattern="^back_to_admin$"))
+    application.add_handler(CallbackQueryHandler(admin_settings, pattern="^admin_settings$"))
+    application.add_handler(CallbackQueryHandler(manage_services, pattern="^manage_services$"))
+    application.add_handler(CallbackQueryHandler(delete_service, pattern="^delete_service_"))
     
     logger.info("Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
